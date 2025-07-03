@@ -13,7 +13,7 @@ set -euo pipefail
 #
 # Opciones (antes del comando):
 #   --min-files N    Mínimo de archivos a simular (por defecto 1)
-#   --max-files M    Máximo de archivos a simular (por defecto 10)
+#   --max-files M    Máximo de archivos a simular (por defecto 100)
 #   --min-lines L    Mínimo de registros por archivo (por defecto 1)
 #   --max-lines K    Máximo de registros por archivo (por defecto 5)
 #   --interval S     Intervalo en segundos para bucle automático (por defecto 20)
@@ -33,7 +33,7 @@ set -euo pipefail
 #
 
 # ── Valores por defecto ──────────────────────────────────────────────────
-min_files=1; max_files=10
+min_files=1; max_files=100
 min_lines=1; max_lines=5
 interval=20
 base_dir="runs"
@@ -109,7 +109,6 @@ consolidar() {
   # Consolida y respalda logs de run_dir/devices/
   local in_dir="${run_dir}/devices"
   local out="${run_dir}/reports/APLSTATS-CONSOLIDATION-${ts}.log"
-  echo "→ Consolidando en $out…"
 
   # Si no hay archivos, avisar y salir
   shopt -s nullglob
@@ -135,21 +134,31 @@ report_events() {
   # Conteo por misión, estado y dispositivo
   local in="${run_dir}/reports/APLSTATS-CONSOLIDATION-${ts}.log"
   local out="${run_dir}/reports/APLSTATS-EVENTS-${ts}.log"
+  if [[ ! -f "$in" ]]; then
+    echo "No existe consolidado, ejecuta 'consolidar' primero."; return
+  fi
   {
     printf "mission\tdevice_status\tdevice_type\tcount\n"
-    awk -F'\t' 'NR>1 { key=$2"\t"$4"\t"$3; c[key]++ }
-      END { for (k in c) print k"\t"c[k] }' "$in"
+    awk -F'\t' '
+      NR>1 { key=$2"\t"$4"\t"$3; c[key]++ }
+      END { for (k in c) print k"\t"c[k] }
+    ' "$in"
   } > "$out"
 }
 
 report_disconnections() {
-  # Dispositivos con status “unknown”
+  # Dispositivos con más desconexiones ("unknown"), ordenado desc.
   local in="${run_dir}/reports/APLSTATS-CONSOLIDATION-${ts}.log"
   local out="${run_dir}/reports/APLSTATS-DISCONNECTIONS-${ts}.log"
+  if [[ ! -f "$in" ]]; then
+    echo "No existe consolidado, ejecuta 'consolidar' primero."; return
+  fi
   {
     printf "mission\tdevice_type\tunknown_count\n"
-    awk -F'\t' 'NR>1 && $4=="unknown" { key=$2"\t"$3; c[key]++ }
-      END { for (k in c) print k"\t"c[k] }' "$in"
+    awk -F'\t' '
+      NR>1 && $4=="unknown" { key=$2"\t"$3; c[key]++ }
+      END { for (k in c) print k"\t"c[k] }
+    ' "$in" | sort -t$'\t' -k3,3nr
   } > "$out"
 }
 
@@ -157,10 +166,15 @@ report_killed() {
   # Dispositivos inoperables (status “killed”)
   local in="${run_dir}/reports/APLSTATS-CONSOLIDATION-${ts}.log"
   local out="${run_dir}/reports/APLSTATS-KILLED-${ts}.log"
+  if [[ ! -f "$in" ]]; then
+    echo "No existe consolidado, ejecuta 'consolidar' primero."; return
+  fi
   {
     printf "mission\tkilled_count\n"
-    awk -F'\t' 'NR>1 && $4=="killed" { c[$2]++ }
-      END { for (m in c) print m"\t"c[m] }' "$in"
+    awk -F'\t' '
+      NR>1 && $4=="killed" { c[$2]++ }
+      END { for (m in c) print m"\t"c[m] }
+    ' "$in"
   } > "$out"
 }
 
@@ -168,13 +182,18 @@ report_percentages() {
   # Porcentaje de registros por misión y dispositivo
   local in="${run_dir}/reports/APLSTATS-CONSOLIDATION-${ts}.log"
   local out="${run_dir}/reports/APLSTATS-PERCENTAGES-${ts}.log"
+  if [[ ! -f "$in" ]]; then
+    echo "No existe consolidado, ejecuta 'consolidar' primero."; return
+  fi
   {
     printf "mission\tdevice_type\tpercent\n"
     total=$(awk 'END{print NR-1}' "$in")
-    awk -F'\t' -v tot="$total" 'NR>1 { key=$2"\t"$3; c[key]++ }
+    awk -F'\t' -v tot="$total" '
+      NR>1 { key=$2"\t"$3; c[key]++ }
       END {
         for (k in c) printf "%s\t%.2f%%\n", k, (c[k]/tot*100)
-      }' "$in"
+      }
+    ' "$in"
   } > "$out"
 }
 
@@ -203,11 +222,9 @@ Comandos:
   disconnections  Genera el reporte de desconexiones (unknown)
   killed          Genera el reporte de inoperables (killed)
   percentages     Genera el reporte de porcentajes
-  reports         Ejecuta todos los reportes
-  
+  reports         Ejecuta todos los reportes anteriores
   todo            simular, consolidar y luego reportes
-  loop            Ejecuta 'todo' en bucle cada <interval> segundos,
-                  creando una nueva carpeta run por ciclo
+  loop            Ejecuta 'todo' en bucle cada <interval> s, nueva run por ciclo
   help            Muestra esta ayuda
 EOF
 }
@@ -222,7 +239,7 @@ case "${1-:-}" in
   percentages)   report_percentages ;;
   reports)       report_all ;;
   todo)          simular; consolidar; report_all ;;
-  loop)          # Bucle de ejecuciones periódicas: nueva run por iteración
+  loop)          # Bucle de ejecuciones periódicas: nueva run cada iteración
                  while true; do
                    ts=$(date +"%d%m%y%H%M%S")
                    run_dir="${base_dir}/${ts}"
